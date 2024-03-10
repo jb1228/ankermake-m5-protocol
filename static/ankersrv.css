@@ -137,3 +137,8 @@ body.fullscreen-emulate-active {
 .fullscreen-emulate-d-none-active {
     display: none;
 }
+
+
+.input-group {
+    white-space: nowrap;
+}
