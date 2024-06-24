@@ -25,10 +25,10 @@ Services:
     - util: Houses utility services for use in the web module
     - config: Handles configuration manipulation for ankerctl
 """
-import json
 import logging as log
 
 from secrets import token_urlsafe as token
+from flask_cors import CORS
 from flask import Flask, flash, request, render_template, Response, session, url_for, jsonify
 from flask_sock import Sock
 from user_agents import parse as user_agent_parse
@@ -40,6 +40,10 @@ from web.lib.service import ServiceManager
 import web.config
 import web.platform
 import web.util
+import web.rpcutil
+import web.moonraker
+import web.moonraker.server
+
 
 import cli.util
 import cli.config
@@ -56,11 +60,17 @@ sock = Sock(app)
 
 
 # autopep8: off
+
 import web.service.pppp
 import web.service.ctrl
 import web.service.video
 import web.service.mqtt
 import web.service.filetransfer
+import web.service.updates
+import web.service.jobqueue
+
+
+# =======
 # autopep8: on
 
 
@@ -388,6 +398,9 @@ def app_api_files_local():
         )
 
     return {}
+  
+  
+# >>>>>>> jb
 
 
 def webserver(config, printer_index, host, port, insecure=False, **kwargs):
@@ -404,8 +417,34 @@ def webserver(config, printer_index, host, port, insecure=False, **kwargs):
         - None
     """
     with config.open() as cfg:
+        import web.moonraker.server
+        import web.base
+        import web.api.ws
+        import web.api.access
+        import web.api.ankerctl
+        import web.api.octoprint
+
+        app = Flask(__name__, root_path=ROOT_DIR, static_folder="static", template_folder="static")
+
+        # secret_key is required for flash() to function
+        app.secret_key = token(24)
+        app.config.from_prefixed_env()
+        app.svc = ServiceManager()
+
+        # Register CORS handler for rpc endpoints, to allow mainsail to accept files and
+        # resources from ankerctl.
+        app.cors = CORS(
+            app,
+            resources={
+                r"/server/*": {"origins": "*"},
+                r"/video/*": {"origins": "*"},
+                r"/access/*": {"origins": "*"},
+            }
+        )
+
         if cfg and printer_index >= len(cfg.printers):
             log.critical(f"Printer number {printer_index} out of range, max printer number is {len(cfg.printers)-1} ")
+
         app.config["config"] = config
         app.config["login"] = bool(cfg)
         app.config["printer_index"] = printer_index
@@ -413,9 +452,38 @@ def webserver(config, printer_index, host, port, insecure=False, **kwargs):
         app.config["host"] = host
         app.config["insecure"] = insecure
         app.config.update(kwargs)
-        app.svc.register("pppp", web.service.pppp.PPPPService())
-        app.svc.register("videoqueue", web.service.video.VideoQueue())
-        app.svc.register("ctrl", web.service.ctrl.VideoControl())
-        app.svc.register("mqttqueue", web.service.mqtt.MqttQueue())
-        app.svc.register("filetransfer", web.service.filetransfer.FileTransferService())
+        
+# <<<<<<< chrivers/webserver-mainsail-rpc
+
+        app.svc.register("pppp", web.service.pppp.PPPPService(app))
+        app.svc.register("videoqueue", web.service.video.VideoQueue(app))
+        app.svc.register("mqttqueue", web.service.mqtt.MqttQueue(app))
+        app.svc.register("filetransfer", web.service.filetransfer.FileTransferService(app))
+        app.svc.register("updates", web.service.updates.UpdateNotifierService(app))
+        app.svc.register("jobqueue", web.service.jobqueue.JobQueueService(app))
+
+        # Take a reference to the "updates" service to make it run at all
+        # times. This ensures that we can track temperatures and other state,
+        # even when no clients are actively connected.
+        #
+        # One downside of this, is that the "mqttqueue" service will always be
+        # activated, since the "updates" service depends on it. However, unlike
+        # most of the other services, mqtt supports multiple clients, so this
+        # will not prevent any other programs from using the printer.
+        app.svc.get("updates")
+
+        app.register_blueprint(web.moonraker.server.router, url_prefix="/server")
+        app.register_blueprint(web.api.ws.router, url_prefix="/ws")
+        app.register_blueprint(web.api.octoprint.router, url_prefix="/api")
+        app.register_blueprint(web.api.ankerctl.router, url_prefix="/api/ankerctl")
+        app.register_blueprint(web.api.access.router, url_prefix="/access")
+        app.register_blueprint(web.base.router, url_prefix="/")
+
+# =======
+#         app.svc.register("pppp", web.service.pppp.PPPPService())
+#         app.svc.register("videoqueue", web.service.video.VideoQueue())
+#         app.svc.register("ctrl", web.service.ctrl.VideoControl())
+#         app.svc.register("mqttqueue", web.service.mqtt.MqttQueue())
+#         app.svc.register("filetransfer", web.service.filetransfer.FileTransferService())
+# >>>>>>> jb
         app.run(host=host, port=port)
