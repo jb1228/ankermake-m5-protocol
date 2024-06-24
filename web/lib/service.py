@@ -1,6 +1,5 @@
-import sys
 import atexit
-import logging
+import logging as log
 import contextlib
 
 from enum import Enum
@@ -8,33 +7,11 @@ from threading import Thread, Event
 from datetime import datetime, timedelta
 from multiprocessing import Queue
 
-from ..lib import trace
-
 
 class Holdoff:
-    """Holdoff manages a deadline, set some time in the future.
-
-    When creating a new Holdoff object, its deadline is initially set to
-    datetime.now().
-
-    h = Holdoff()
-
-    # set a deadline for 0.5 seconds from now
-    h.reset(delay=0.5)
-
-    # will be slightly less than 0.5
-    print(h.remaining)
-
-    print(h.passed) # False
-    time.sleep(1)
-    print(h.passed) # True
-    """
 
     def __init__(self):
-        self.deadline = datetime.now()
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}<deadline={self.deadline}, remaining={self.remaining}>"
+        self.deadline = None
 
     def reset(self, delay=None):
         self.deadline = datetime.now()
@@ -42,35 +19,8 @@ class Holdoff:
             self.deadline += timedelta(seconds=delay)
 
     @property
-    def remaining(self):
-        return (self.deadline - datetime.now()).total_seconds()
-
-    @property
     def passed(self):
-        return self.remaining < 0
-
-
-class WaitableHoldoff(Holdoff):
-
-    def __init__(self):
-        super().__init__()
-        self._event = Event()
-
-    def wait(self, timeout=None):
-        rem = self.remaining
-        if rem < 0:
-            self.reset(delay=0.1)
-            self.signal()
-            return True
-
-        if self._event.wait(timeout or rem):
-            self._event.clear()
-            return self.passed
-        else:
-            return True
-
-    def signal(self):
-        self._event.set()
+        return datetime.now() > self.deadline
 
 
 class ServiceError(Exception):
@@ -92,54 +42,41 @@ class ServiceRestartSignal(ServiceSignal):
 class RunState(Enum):
     Starting = 2
     Running  = 3
-    Idle     = 4
+    # Idle     = 4
     Stopping = 5
     Stopped  = 6
 
 
 class Service(Thread):
 
-    def __init__(self, app):
+    def __init__(self):
         super().__init__()
-        self._log = logging.getLogger(type(self).__name__)
         self.running = True
         self.deadline = None
-        self._state = RunState.Stopped
+        self.state = RunState.Stopped
         self.wanted = False
-        self._event = WaitableHoldoff()
+        self._event = Event()
         self.handlers = []
+        self._holdoff = Holdoff()
         self.daemon = True
-        self.app = app
-        self._shutdown = False
-        self.name = type(self).__name__
         super().start()
 
     @property
-    def state(self):
-        return self._state
-
-    @state.setter
-    def state(self, new):
-        # self._log.debug(f"Changing state [{self._state.name}] -> [{new.name}]")
-        self._state = new
+    def name(self):
+        return type(self).__name__
 
     def start(self):
-        self._log.info("Requesting start")
+        log.info(f"{self.name}: Requesting start")
         self.wanted = True
-        self._event.reset()
-        self._event.signal()
+        self._event.set()
 
     def stop(self):
-        if not self.wanted:
-            return
-        self._log.info("Requesting stop")
+        log.info(f"{self.name}: Requesting stop")
         self.wanted = False
-        if self._shutdown:
-            self._event.reset()
-        self._event.signal()
+        self._event.set()
 
     def restart(self):
-        self._log.info("Requesting restart")
+        log.info(f"{self.name}: Requesting restart")
         wanted = self.wanted
         self.stop()
         self.await_stopped()
@@ -148,125 +85,101 @@ class Service(Thread):
             self.await_ready()
 
     def shutdown(self):
-        self._shutdown = True
-
         if self.state != RunState.Stopped:
             self.stop()
             self.await_stopped()
 
         self.running = False
-        self._event.signal()
+        self._event.set()
         return self.join()
 
     def idle(self, timeout=None):
-        return self._event.wait(timeout)
+        if self._event.wait(timeout=timeout):
+            self._event.clear()
 
     def _attempt_start(self):
         try:
-            self._log.debug(f"{self.name} worker starting..")
-            self._event.reset(delay=1)
+            log.debug(f"{self.name} worker starting..")
             self.worker_start()
         except Exception as E:
             if self.wanted:
                 if isinstance(E, TimeoutError):
                     pass
                 elif isinstance(E, ServiceStoppedError):
-                    self._log.error(f"Failed to start worker: {E}. Retrying in 1 second.")
+                    log.error(f"{self.name}: Failed to start worker: {E}. Retrying in 1 second.")
                 else:
-                    self._log.exception(f"Failed to start worker: {E}. Retrying in 1 second.")
-                self._event.reset(delay=1)
+                    log.exception(f"{self.name}: Failed to start worker: {E}. Retrying in 1 second.")
+                self._holdoff.reset(delay=1)
             else:
                 if not isinstance(E, (TimeoutError, ServiceStoppedError)):
-                    self._log.error(f"Failed to start worker: {E}. Shutting down service.")
+                    log.error(f"{self.name}: Failed to start worker: {E}. Shutting down service.")
                 self.state = RunState.Stopped
-                self._event.signal()
         else:
-            self._log.info("Worker started")
+            log.info(f"{self.name}: Worker started")
             self.state = RunState.Running
-            self._event.reset()
-            self._event.signal()
 
     def _attempt_run(self):
         try:
-            self._event.reset(delay=0.1)
             self.worker_run(timeout=0.1)
         except ServiceRestartSignal:
-            self._log.info("Service requested restart.")
+            log.info(f"{self.name}: Service requested restart.")
+            self._holdoff.reset(delay=1)
             self.state = RunState.Stopping
-            self._event.reset(delay=1)
-            self._event.signal()
         except Exception:
-            self._log.exception("Unexpected exception while running worker")
-            self._log.warning("Stopping worker due to exception")
+            log.exception(f"{self.name}: Unexpected exception while running worker")
+            log.warning(f"{self.name}: Stopping worker due to exception")
+            self._holdoff.reset()
             self.state = RunState.Stopping
-            self._event.reset()
-            self._event.signal()
 
     def _attempt_stop(self):
         try:
             self.worker_stop()
         except Exception as E:
-            self._log.exception(f"Failed to stop worker: {E}. Retrying in 1 second.")
-            self._event.reset(delay=1)
+            log.exception(f"{self.name}: Failed to stop worker: {E}. Retrying in 1 second.")
+            self._holdoff.reset(delay=1)
         else:
-            self._log.info("Worker stopped")
+            log.info(f"{self.name}: Worker stopped")
             self.state = RunState.Stopped
-            self._event.reset()
-            self._event.signal()
 
     def run(self):
         self.worker_init()
 
         while self.running:
-            match self.state:
-                case RunState.Starting:
-                    if self._event.wait():
-                        self._attempt_start()
+            if self.state == RunState.Starting:
+                if self._holdoff.passed:
+                    self._attempt_start()
+                else:
+                    self.idle(timeout=0.1)
 
-                case RunState.Running:
-                    if self.wanted:
-                        self._attempt_run()
-                    elif not self._shutdown:
-                        self._log.debug("Worker going idle")
-                        self.state = RunState.Idle
-                        self._event.reset(delay=5)
-                        self._event.signal()
-                    else:
-                        self._log.debug("Worker stopping")
-                        self.state = RunState.Stopping
-                        self._event.reset()
-                        self._event.signal()
+            elif self.state == RunState.Running:
+                if self.wanted:
+                    self._attempt_run()
+                else:
+                    log.debug(f"{self.name}: Stopping worker")
+                    self._holdoff.reset()
+                    self.state = RunState.Stopping
 
-                case RunState.Idle:
-                    if self._shutdown or self._event.wait():
-                        self._log.debug("Stopping worker")
-                        self.state = RunState.Stopping
-                        self._event.reset()
-                        self._event.signal()
-                    elif self.wanted:
-                        self._log.debug("Worker resuming")
-                        self.state = RunState.Running
-                        self._event.reset()
-                        self._event.signal()
+            elif self.state == RunState.Stopping:
+                if self._holdoff.passed:
+                    self._attempt_stop()
+                else:
+                    self.idle(timeout=0.1)
 
-                case RunState.Stopping:
-                    if self._event.wait():
-                        self._attempt_stop()
+            elif self.state == RunState.Stopped:
+                if self.wanted:
+                    log.debug(f"{self.name}: Starting worker")
+                    self._holdoff.reset()
+                    self.state = RunState.Starting
+                else:
+                    self.idle(timeout=0.1)
+            else:
+                raise ValueError("Unknown state value")
 
-                case RunState.Stopped:
-                    self._event.wait()
-                    if self.wanted:
-                        self._log.debug("Starting worker")
-                        self.state = RunState.Starting
-                        self._event.reset()
-                        self._event.signal()
-                    else:
-                        self._event.reset(delay=10)
-
-                case _:
-                    raise ValueError("Unknown state value")
-
-        self._log.debug("Thread exit")
+        log.debug(f"{self.name}: Shutting down thread")
+        if self.state == RunState.Running:
+            self.handlers.clear()
+            self.worker_stop()
+        log.debug(f"{self.name}: Thread exit")
 
     def worker_init(self):
         pass
@@ -294,34 +207,32 @@ class Service(Thread):
 
     def await_ready(self):
         while True:
+            log.debug(f"{self.name}: Awaiting ready ({self.state})")
             if not (self.running and self.wanted):
-                raise ServiceStoppedError(f"{self.name}: Service stopped while waiting for it to start")
+                raise ServiceStoppedError(f"{self.name}: Waiting for stopped thread")
 
             if self.state == RunState.Running:
-                self._log.debug("Ready")
+                log.debug(f"{self.name}: Ready")
                 return True
 
-            self._log.debug(f"Awaiting ready ({self.state})")
             self.idle(timeout=0.4)
 
     def await_stopped(self):
         while True:
             if self.wanted:
-                self._log.warning("Service started while waiting for it to stop")
+                log.warning(f"{self.name}: Service started while waiting for it to stop")
                 return False
 
             if self.state == RunState.Stopped:
-                self._log.debug("Stopped")
+                log.debug(f"{self.name}: Stopped")
                 return True
 
-            self._log.debug(f"Awaiting stopped ({self.state})")
             self.idle(timeout=0.4)
 
 
 class ServiceManager:
 
     def __init__(self):
-        self._log = logging.getLogger("ServiceManager")
         self.svcs = {}
         self.refs = {}
         atexit.register(self.atexit)
@@ -333,39 +244,30 @@ class ServiceManager:
         return name in self.svcs
 
     def atexit(self):
-        sys.stderr.write("\n")
-        self._log.debug("Shutting down threads..")
+        log.debug("ServiceManager: Shutting down threads..")
         self.dump()
-        trace.trace_all_threads()
-
-        for svc in self.svcs.values():
-            svc._shutdown = True
-
         for svc in self.svcs.values():
             if svc.state != RunState.Stopped:
                 svc.stop()
 
+        log.debug("ServiceManager: Waiting for threads to stop..")
         self.dump()
-
-        self._log.debug("Waiting for threads to stop..")
         for svc in self.svcs.values():
-            self._log.debug(f"Waiting for {svc.name}..")
-            trace.trace_thread(svc)
             svc.await_stopped()
 
-        self._log.debug("Cleaning up threads..")
+        log.debug("ServiceManager: Cleaning up threads..")
         self.dump()
         for svc in self.svcs.values():
             svc.shutdown()
 
-        self._log.info("Shutdown complete")
+        log.info("ServiceManager: Shutdown complete")
 
     def dump(self):
-        self._log.debug("Service state")
+        log.debug("Service state")
         for name in self.svcs:
             svc = self.svcs[name]
             ref = self.refs[name]
-            self._log.debug(f"  [{ref:>4}] {name:20} running={svc.running} state={svc.state} wanted={svc.wanted}")
+            log.debug(f"  [{ref:>4}] {name:20} running={svc.running} state={svc.state} wanted={svc.wanted}")
 
     def register(self, name: str, svc: Service):
         if name in self:
