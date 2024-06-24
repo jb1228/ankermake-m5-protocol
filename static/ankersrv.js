@@ -182,6 +182,77 @@ $(function () {
     }
 
     /**
+     * Updates the country code <select> element
+     */
+    (function(selectElement) {
+        var countryCodes = selectElement.data("countrycodes");
+        var currentCountry = selectElement.data("country");
+        countryCodes.forEach((item) => {
+            var selected = (currentCountry == item.c) ? " selected" : "";
+            $(`<option value="${item.c}"${selected}>${item.n}</option>`).appendTo(selectElement);
+        });
+    })($("#loginCountry"));
+
+    /**
+     * Login data submission and CAPTCHA handling
+     */
+    $("#captchaRow").hide();
+    $("#loginCaptchaId").val("");
+
+    $("#config-login-form").on("submit", function(e) {
+        e.preventDefault();
+
+        (async () => {
+            const form = $("#config-login-form");
+            const url = form.attr("action");
+
+            const form_data = new URLSearchParams();
+            for (const pair of new FormData(form.get(0))) {
+                form_data.append(pair[0], pair[1]);
+            }
+
+            const resp = await fetch(url, {
+                method: 'POST',
+                body: form_data
+            });
+
+            if (resp.status < 300) {
+                const data = await resp.json();
+                const input = $("#loginCaptchaText");
+                if ("redirect" in data) {
+                    document.location = data["redirect"];
+                }
+                else if ("error" in data) {
+                    flash_message(data["error"], "danger");
+                    input.get(0).focus();
+                }
+                else if ("captcha_id" in data) {
+                    input.val("");
+                    input.attr("aria-required", "true");
+                    input.prop("required");
+                    input.get(0).focus();
+                    $("#loginCaptchaId").val(data["captcha_id"]);
+                    $("#loginCaptchaImg").attr("src", data["captcha_url"]);
+                    $("#captchaRow").show();
+                }
+            }
+            else {
+                flash_message(`HTTP Error ${resp.status}: ${resp.statusText}`, "danger")
+            }
+        })();
+    });
+
+    function flash_message(message, category) {
+        // copy from base.html
+        $(`<div class="alert alert-${category} alert-dismissible fade show" data-timeout="7500" role="alert">` +
+          '<button type="button" class="btn-close btn-sm btn-close-white" data-bs-dismiss="alert" aria-label="Close">' +
+          '</button>' +
+          message +
+          '</div>').appendTo($("#messages").empty());
+        // does not auto-close yet...
+    }
+
+    /**
      * AutoWebSocket class
      *
      * This class wraps a WebSocket, and makes it automatically reconnect if the
@@ -256,7 +327,7 @@ $(function () {
 
     sockets.mqtt = new AutoWebSocket({
         name: "mqtt socket",
-        url: `ws://${location.host}/ws/mqtt`,
+        url: `${location.protocol.replace('http','ws')}//${location.host}/ws/mqtt`,
         badge: "#badge-mqtt",
 
         message: function (ev) {
@@ -316,7 +387,7 @@ $(function () {
      */
     sockets.video = new AutoWebSocket({
         name: "Video socket",
-        url: `ws://${location.host}/ws/video`,
+        url: `${location.protocol.replace('http','ws')}//${location.host}/ws/video`,
         badge: "#badge-pppp",
         binary: true,
 
@@ -355,8 +426,33 @@ $(function () {
 
     sockets.ctrl = new AutoWebSocket({
         name: "Control socket",
-        url: `ws://${location.host}/ws/ctrl`,
+        url: `${location.protocol.replace('http','ws')}//${location.host}/ws/ctrl`,
         badge: "#badge-ctrl",
+
+        message: function (event) {
+            const data = JSON.parse(event.data);
+            if (data.wifi) {
+                let badge = $("#badge-wifi");
+                badge.removeClass("text-bg-danger text-bg-warning text-bg-success");
+                var icon, level;
+                if (data.wifi < 40) {
+                    icon = "reception-4";
+                    level = "success";
+                } else if (data.wifi < 50) {
+                    icon = "reception-3";
+                    level = "success";
+                } else if (data.wifi < 60) {
+                    icon = "reception-2";
+                    level = "warning";
+                } else {
+                    icon = "reception-1";
+                    level = "error";
+                }
+                badge
+                    .html(`Wifi ${data.wifi} <i class="bi-${icon}"></i>`)
+                    .addClass(`text-bg-${level}`);
+            }
+        },
     });
 
     /* Only connect websockets if #player element exists in DOM (i.e., if we

@@ -1,7 +1,7 @@
 import json
 from types import UnionType
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, MISSING
 from libflagship.util import unhex, enhex
 
 
@@ -34,7 +34,11 @@ class Serialize:
     def from_dict(cls, data):
         res = {}
         for k, v in cls.__dataclass_fields__.items():
-            res[k] = data[k]
+            if (k not in data) and (v.default is not MISSING):
+                # prevent KeyErrors if there is a default value
+                res[k] = v.default
+            else:
+                res[k] = data[k]
             if v.type == bytes:
                 res[k] = unhex(res[k])
             elif v.type == datetime:
@@ -97,6 +101,7 @@ class Account(Serialize):
     region: str
     user_id: str
     email: str
+    country: str=""
 
     @property
     def mqtt_username(self):
