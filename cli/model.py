@@ -40,6 +40,17 @@ class Serialize:
 
 
 @dataclass
+class MqttRelay(Serialize):
+    name: str
+    host: str
+    port: int
+    username: str
+    password: str
+    use_ssl: bool
+    use_ha: bool
+
+
+@dataclass
 class Printer(Serialize):
     id: str
     sn: str
@@ -77,6 +88,7 @@ class Account(Serialize):
 class Config(Serialize):
     account: Account
     printers: list[Printer]
+    mqttrelay: MqttRelay
 
     def __bool__(self):
         return bool(self.account)

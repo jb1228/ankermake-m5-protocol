@@ -13,7 +13,7 @@ from libflagship.httpapi import AnkerHTTPApi, AnkerHTTPAppApiV1, \
 from libflagship.util import unhex
 from libflagship import logincache
 
-from .model import Serialize, Account, Printer, Config
+from .model import Serialize, Account, Printer, MqttRelay, Config
 
 
 class BaseConfigManager:
@@ -77,11 +77,11 @@ class AnkerConfigManager(BaseConfigManager):
         return self._borrow("default", write=True)
 
     def open(self):
-        return self._borrow("default", write=False, default=Config(account=None, printers=[]))
+        return self._borrow("default", write=False, default=Config(account=None, printers=[], mqttrelay=None))
 
 
 def configmgr(profile="default"):
-    return AnkerConfigManager(PlatformDirs("ankerctl"), classes=(Config, Account, Printer))
+    return AnkerConfigManager(PlatformDirs("ankerctl"), classes=(Config, Account, Printer, MqttRelay))
 
 
 def load_config_from_api(auth_token, region, insecure):

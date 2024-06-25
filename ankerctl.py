@@ -19,6 +19,8 @@ import cli.pppp
 import cli.checkver  # check python version
 import cli.countrycodes
 
+from cli.mqttrelay import MqttRelay
+
 import libflagship.httpapi
 import libflagship.logincache
 import libflagship.seccode
@@ -103,14 +105,26 @@ def mqtt(env):
     env.load_config()
 
 
+
+
+
+
+
+
+
 @mqtt.command("monitor")
+@click.option("--relay", "-r", default=False, is_flag=True, help="Relay messages to (and eventually from) local MQTT server")
 @pass_env
-def mqtt_monitor(env):
+def mqtt_monitor(env, relay):
     """
     Connect to mqtt broker, and show low-level events in realtime.
     """
 
     client = cli.mqtt.mqtt_open(env.config, env.printer_index, env.insecure)
+
+    # Create mqtt_relay instance if requested
+    if relay:
+        mqtt_relay = MqttRelay(env, env.printer_index)
 
     for msg, body in client.fetchloop():
         log.info(f"TOPIC [{msg.topic}]")
@@ -122,11 +136,27 @@ def mqtt_monitor(env):
                 name = MqttMsgType(cmdtype).name
                 if name.startswith("ZZ_MQTT_CMD_"):
                     name = name[len("ZZ_MQTT_CMD_"):].lower()
+                
+                # Send incoming message to MQTT relay
+                if relay:
+                    mqtt_relay.process_incoming_msg(obj, name)
 
                 del obj["commandType"]
                 print(f"  [{cmdtype:4}] {name:20} {obj}")
             except Exception:
                 print(f"  {obj}")
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @mqtt.command("send")
@@ -546,6 +576,15 @@ def config_show(env):
             print(f"    p2p_hosts: {', '.join(p.p2p_hosts)}")
             print()
 
+        log.info("MQTT Relay:")
+        print(f"    name:      {cfg.mqttrelay.name}")
+        print(f"    host:      {cfg.mqttrelay.host}")
+        print(f"    port:      {cfg.mqttrelay.port}")
+        print(f"    username:  <REDACTED>")
+        print(f"    password:  <REDACTED>")
+        print(f"    use_ssl:   {cfg.mqttrelay.use_ssl}")
+        print(f"    use_ha:    {cfg.mqttrelay.use_ha}")
+        print()
 
 @main.group("webserver", help="Built-in webserver support")
 @pass_env
