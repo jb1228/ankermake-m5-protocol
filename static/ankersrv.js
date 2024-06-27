@@ -433,7 +433,6 @@ $(function () {
             const data = JSON.parse(event.data);
             if (data.wifi) {
                 let badge = $("#badge-wifi");
-                badge.removeClass("text-bg-danger text-bg-warning text-bg-success");
                 var icon, level;
                 if (data.wifi < 40) {
                     icon = "reception-4";
@@ -449,7 +448,8 @@ $(function () {
                     level = "error";
                 }
                 badge
-                    .html(`Wifi ${data.wifi} <i class="bi-${icon}"></i>`)
+                    .html(`WIFI: ${data.wifi} <i class="bi-${icon}"></i>`)
+                    .removeClass("text-bg-secondary text-bg-danger text-bg-warning text-bg-success")
                     .addClass(`text-bg-${level}`);
             }
         },

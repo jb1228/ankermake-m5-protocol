@@ -19,6 +19,8 @@ import cli.pppp
 import cli.checkver  # check python version
 import cli.countrycodes
 
+from cli.mqttrelay import MqttRelay
+
 import libflagship.httpapi
 import libflagship.logincache
 import libflagship.seccode
@@ -97,20 +99,59 @@ def main(ctx, pppp_dump, verbose, quiet, insecure, printer):
     log.debug(f"Using printer [{env.printer_index}]")
 
 
+
+
+
+@main.command("test", help="Testing Code")
+@pass_env
+def test(env):
+    env.load_config()
+
+    client = cli.mqtt.mqtt_open(env.config, env.printer_index, env.insecure)
+
+    # GCODE
+    gcode = "M115"
+    cmd = {
+        "commandType": MqttMsgType.ZZ_MQTT_CMD_GCODE_COMMAND.value,
+        "cmdData": gcode,
+        "cmdLen": len(gcode),
+    }
+
+    client.command(cmd)
+    msg = client.await_response(MqttMsgType.ZZ_MQTT_CMD_GCODE_COMMAND)
+    if msg:
+        print(msg["resData"])
+    else:
+        log.error("No response from printer")
+
+
 @main.group("mqtt", help="Low-level mqtt api access")
 @pass_env
 def mqtt(env):
     env.load_config()
 
 
+
+
+
+
+
+
+
 @mqtt.command("monitor")
+@click.option("--relay", "-r", default=False, is_flag=True, help="Relay messages to (and eventually from) local MQTT server")
 @pass_env
-def mqtt_monitor(env):
+def mqtt_monitor(env, relay):
     """
     Connect to mqtt broker, and show low-level events in realtime.
     """
 
     client = cli.mqtt.mqtt_open(env.config, env.printer_index, env.insecure)
+
+    # Create mqtt_relay instance if requested
+    if relay:
+        mqtt_relay = MqttRelay(env, client, env.printer_index)
+        mqtt_relay.connect()
 
     for msg, body in client.fetchloop():
         log.info(f"TOPIC [{msg.topic}]")
@@ -122,11 +163,31 @@ def mqtt_monitor(env):
                 name = MqttMsgType(cmdtype).name
                 if name.startswith("ZZ_MQTT_CMD_"):
                     name = name[len("ZZ_MQTT_CMD_"):].lower()
+                
+                # Send incoming message to MQTT relay
+                if relay:
+                    mqtt_relay.process_incoming_msg(obj, name)
 
                 del obj["commandType"]
                 print(f"  [{cmdtype:4}] {name:20} {obj}")
             except Exception:
                 print(f"  {obj}")
+
+                 # Send incoming message to MQTT relay
+                if relay:
+                    mqtt_relay.process_incoming_msg(obj)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @mqtt.command("send")
@@ -546,6 +607,15 @@ def config_show(env):
             print(f"    p2p_hosts: {', '.join(p.p2p_hosts)}")
             print()
 
+        log.info("MQTT Relay:")
+        print(f"    name:      {cfg.mqttrelay.name}")
+        print(f"    host:      {cfg.mqttrelay.host}")
+        print(f"    port:      {cfg.mqttrelay.port}")
+        print(f"    username:  <REDACTED>")
+        print(f"    password:  <REDACTED>")
+        print(f"    use_ssl:   {cfg.mqttrelay.use_ssl}")
+        print(f"    use_ha:    {cfg.mqttrelay.use_ha}")
+        print()
 
 @main.group("webserver", help="Built-in webserver support")
 @pass_env
