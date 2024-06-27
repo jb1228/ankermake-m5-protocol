@@ -99,6 +99,32 @@ def main(ctx, pppp_dump, verbose, quiet, insecure, printer):
     log.debug(f"Using printer [{env.printer_index}]")
 
 
+
+
+
+@main.command("test", help="Testing Code")
+@pass_env
+def test(env):
+    env.load_config()
+
+    client = cli.mqtt.mqtt_open(env.config, env.printer_index, env.insecure)
+
+    # GCODE
+    gcode = "M115"
+    cmd = {
+        "commandType": MqttMsgType.ZZ_MQTT_CMD_GCODE_COMMAND.value,
+        "cmdData": gcode,
+        "cmdLen": len(gcode),
+    }
+
+    client.command(cmd)
+    msg = client.await_response(MqttMsgType.ZZ_MQTT_CMD_GCODE_COMMAND)
+    if msg:
+        print(msg["resData"])
+    else:
+        log.error("No response from printer")
+
+
 @main.group("mqtt", help="Low-level mqtt api access")
 @pass_env
 def mqtt(env):
@@ -124,7 +150,8 @@ def mqtt_monitor(env, relay):
 
     # Create mqtt_relay instance if requested
     if relay:
-        mqtt_relay = MqttRelay(env, env.printer_index)
+        mqtt_relay = MqttRelay(env, client, env.printer_index)
+        mqtt_relay.connect()
 
     for msg, body in client.fetchloop():
         log.info(f"TOPIC [{msg.topic}]")
@@ -145,6 +172,10 @@ def mqtt_monitor(env, relay):
                 print(f"  [{cmdtype:4}] {name:20} {obj}")
             except Exception:
                 print(f"  {obj}")
+
+                 # Send incoming message to MQTT relay
+                if relay:
+                    mqtt_relay.process_incoming_msg(obj)
 
 
 
